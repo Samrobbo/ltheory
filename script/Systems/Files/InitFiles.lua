@@ -1,9 +1,31 @@
 local InitFiles = {}
 
-local function comment(commentTable)
-    -- Config Desc
-    for _, headerLine in ipairs(commentTable) do io.write(format("# %s\n", headerLine)) end
-end
+local writeDenylist = {
+    categories = {
+        "world"
+    },
+    variables = {
+        "humanPlayer"
+    },
+    variableSubStrings = {
+        "current",
+        "lastCamera",
+        "playerMoving",
+        "weaponGroup",
+        "autonavTimestamp",
+        "mapSystemZoom"
+    }
+}
+
+-- Only write strings, booleans and numbers. 
+local writeAllowlist = {
+    types = {
+        "string",
+        "boolean",
+        "number",
+        "table" -- Tables are iterated over to all leaf nodes.
+    }
+}
 
 function InitFiles:readUserInits()
     -- Reads user initialization values from file
@@ -204,15 +226,88 @@ function InitFiles:writeUserInits()
     -- Sets the input file for writing
     io.output(openedFile)
 
-    -- Clean up GameState table
-    local noFunctions = {}
-
-    for l_Index, l_Value in pairs(GameState) do
-        if type(l_Value) == "table" then
-            noFunctions[l_Index] = l_Value
+    local function shouldWrite(variable, value)
+        -- Check if key is denylisted directly.
+        for _,denyKey in pairs(writeDenylist.variables) do
+            if variable == denyKey then
+                return false
+            end
+        end
+    
+        -- Check if key contains denylisted substring.
+        for _,prefix in pairs(writeDenylist.variableSubStrings) do
+            if string.match(variable, prefix) then
+                return false;
+            end
+        end
+    
+        -- Check if type(value) is allowlisted.
+        for _,allowedType in pairs(writeAllowlist) do
+            if type(value) == allowedType then
+                return true
+            end
         end
     end
+    
+    local function comment(commentTable)
+        local commentString = ""
+        -- Config Desc
+        for _, headerLine in ipairs(commentTable) do
+            commentString = commentString .. format("# %s\n", headerLine)
+        end
+        return commentString
+    end
+    
+    local function options(optionTitle, optionTable, optionDesc)
+        local optionString = string.lower(table.concat(optionTable, ", "))
+        return comment {
+            optionTitle .. "Options: <" .. optionString .. ">",
+            optionDesc
+        }
+    end
 
+    local function variableValueString(variableKey, value)
+        
+        local prefixLines = ""
+        if variableKey == "cursorStyle" then
+            value = cursorType
+            prefixLines = options("cursorStyle", Enums.CursorStyleNames, "The game`s currently used cursor style.")
+        elseif variableKey == "hudStyle" then
+            value = hudType
+            prefixLines = options("hudStyle", Enums.HudStyleNames, "The game`s currently used hud style.")
+        elseif variableKey == "startupCamera" then
+            value = startupCameraMode
+            prefixLines = options("startupCamera", Enums.CameraModeNames, "The camera mode the game starts up with.")
+        end
+        -- printf("writing %s: %s", l_Variable, l_Value)
+        return prefixLines .. format("%s=%s\n", tostring(variableKey), tostring(value))
+    end
+    
+    local function categoryString(categoryKey, categoryTable)
+        -- Return early if category is denylisted.
+        for _,denyKey in pairs(writeDenylist.categories) do
+            if categoryKey == denyKey then
+                return ""
+            end
+        end
+    
+        local catFileString = format("[%s]\n", tostring(categoryKey))
+        local subCatFileString = ""
+    
+        for variable, value in pairsByKeys(categoryTable) do
+            -- printf("Category: %s | Variable: %s | Val: %s (type: %s)", categoryKey, l_Variable, l_Value, type(l_Value))
+            if shouldWrite(variable, value) then
+                if type(value) == "table" then
+                    subCatFileString = subCatFileString .. categoryString(categoryKey .. "." .. variable, value)
+                else
+                    catFileString = catFileString .. variableValueString(variable, value)
+                end
+            end
+        end
+    
+        return catFileString .. subCatFileString
+    end
+    
     local function pairsByKeys(t, f)
         local a = {}
         for n in pairs(t) do table.insert(a, n) end
@@ -229,80 +324,24 @@ function InitFiles:writeUserInits()
         return iter
     end
 
-    local function writeSubCat(cat, var, val)
-        io.write(format("[%s]", tostring(cat) .. "." .. tostring(var)), "\n")
-        for l_SubCat, l_SubTable in pairsByKeys(val) do
-            io.write(format("%s=%s", tostring(l_SubCat), tostring(l_SubTable)), "\n")
-        end
-    end
-
-    local function writeOptions(optionTitle, optionTable, optionDesc)
-        local optionString = string.lower(table.concat(optionTable, ", "))
-
-        comment {
-            optionTitle .. "Options: <" .. optionString .. ">",
-            optionDesc
-        }
-    end
-
-    comment {
+    io.write(comment {
         "Hello World! This is the Limit Theory Redux Configuration File",
         "Support the LTR project by discussing, contributing or silent participation:",
         "GitHub: " .. Config.orgInfo.repository,
         "Discord: " .. Config.orgInfo.discord
-    }
+    })
 
-    for l_Category, l_CategoryTable in pairsByKeys(noFunctions) do
-        -- this is dirty for now, but its the only category without anything we need to save
-        if l_Category ~= "world" then
-            io.write(format("[%s]", tostring(l_Category)), "\n")
+    -- Clean up GameState table
+    local categories = {}
+
+    for l_Index, l_Value in pairs(GameState) do
+        if type(l_Value) == "table" then
+            categories[l_Index] = l_Value
         end
+    end
 
-        local cacheSubCat
-        local cacheSubCatVar
-        local cacheSubCatVal
-
-        for l_Variable, l_Value in pairsByKeys(l_CategoryTable) do
-            local pass = true
-            -- excluded
-            if string.match(l_Variable, "current")
-                or string.match(l_Variable, "lastCamera")
-                or string.match(l_Variable, "playerMoving")
-                or string.match(l_Variable, "weaponGroup")
-                or string.match(l_Variable, "autonavTimestamp")
-                or string.match(l_Variable, "mapSystemZoom") then
-                do
-                    pass = false
-                end
-            end
-            -- dont allow any other than string, boolean and numbers also ignore "current" variables
-            if pass and type(l_Value) == "string"
-                or pass and type(l_Value) == "boolean"
-                or pass and type(l_Value) == "number" then
-                do
-                    if l_Variable == "cursorStyle" then
-                        l_Value = cursorType
-                        writeOptions("cursorStyle", Enums.CursorStyleNames, "The game`s currently used cursor style.")
-                    elseif l_Variable == "hudStyle" then
-                        l_Value = hudType
-                        writeOptions("hudStyle", Enums.HudStyleNames, "The game`s currently used hud style.")
-                    elseif l_Variable == "startupCamera" then
-                        l_Value = startupCameraMode
-                        writeOptions("startupCamera", Enums.CameraModeNames, "The camera mode the game starts up with.")
-                    end
-                    --printf("writing %s: %s", l_Variable, l_Value)
-                    io.write(format("%s=%s", tostring(l_Variable), tostring(l_Value)), "\n")
-                end
-            elseif pass and type(l_Value) == "table" and not string.match(l_Variable, "humanPlayer") then
-                cacheSubCat = l_Category
-                cacheSubCatVar = l_Variable
-                cacheSubCatVal = l_Value
-            end
-        end
-
-        if cacheSubCat and cacheSubCatVar and cacheSubCatVal then
-            writeSubCat(cacheSubCat, cacheSubCatVar, cacheSubCatVal)
-        end
+    for l_Category, l_CategoryTable in pairsByKeys(categories) do
+        io.write(categoryString(l_Category, l_CategoryTable))
     end
     -- Closes the open file
     io.close(openedFile)
